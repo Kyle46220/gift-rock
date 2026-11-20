@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {ImprovedNoise} from 'three/addons/math/ImprovedNoise.js';
 import {initialRock,type RockConfig} from '@/lib/rock';
+import {sculptGestureHandlers,type RockMode} from '@/lib/sculpt-gestures';
 const noise=new ImprovedNoise();
 export function makeGeometry(c:RockConfig){
  const g=new THREE.SphereGeometry(1,128,96),a=g.attributes.position;const scales=[[1.2,.85,1],[1.08,1,1],[1.3,.49,1.04],[.76,1.3,.78],[1.12,.85,.93],[.88,1.17,.82]][c.template];
@@ -23,7 +24,7 @@ function stoneCanvas(c:RockConfig){const canvas=document.createElement('canvas')
  if(c.stone==='marble'){const vein=Math.abs(Math.sin(px*6+py*3+noise.noise(px*3,py*3,pz*3)*5));f-=Math.exp(-vein*30)*.42;f+=grain*.04;}
  const i=(y*1024+x)*4;pixels.data[i]=Math.min(255,rgb[0]*f);pixels.data[i+1]=Math.min(255,rgb[1]*f);pixels.data[i+2]=Math.min(255,rgb[2]*f);pixels.data[i+3]=255;}
  ctx.putImageData(pixels,0,0);return canvas;}
-export default function RockScene({config,mode='orbit',brush=.32,onStroke,onThumbnails,reset=0}:{config:RockConfig,mode?:string,brush?:number,onStroke?:(s:RockConfig['strokes'][number])=>void,onThumbnails?:(images:string[])=>void,reset?:number}){
+export default function RockScene({config,mode='orbit',brush=.32,onStroke,onThumbnails,reset=0}:{config:RockConfig,mode?:RockMode,brush?:number,onStroke?:(s:RockConfig['strokes'][number])=>void,onThumbnails?:(images:string[])=>void,reset?:number}){
  const host=useRef<HTMLDivElement>(null),runtime=useRef<any>(null),latest=useRef({config,mode,brush,onStroke}),[error,setError]=useState('');latest.current={config,mode,brush,onStroke};
  useEffect(()=>{if(!host.current)return;const el=host.current;let renderer:THREE.WebGLRenderer;try{renderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});}catch{setError('3D needs WebGL. Try opening this link in a recent Safari, Chrome or Firefox browser.');return;}
  renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.4;el.appendChild(renderer.domElement);
@@ -32,11 +33,25 @@ export default function RockScene({config,mode='orbit',brush=.32,onStroke,onThum
  const material=new THREE.MeshStandardMaterial({roughness:.85,metalness:0});const mesh=new THREE.Mesh(makeGeometry(latest.current.config),material);scene.add(mesh);runtime.current={renderer,scene,camera,controls,mesh,material};
  if(onThumbnails){const images=[];renderer.setSize(180,140);camera.aspect=180/140;camera.position.set(0,.5,4.8);camera.updateProjectionMatrix();const tex=new THREE.CanvasTexture(stoneCanvas(initialRock));tex.colorSpace=THREE.SRGBColorSpace;material.map=tex;for(let i=0;i<6;i++){mesh.geometry.dispose();mesh.geometry=makeGeometry({...initialRock,template:i});renderer.render(scene,camera);images.push(renderer.domElement.toDataURL());}onThumbnails(images);tex.dispose();material.map=null;camera.position.set(0,.5,5.6);}
  const resize=()=>{renderer.setSize(el.clientWidth,el.clientHeight);camera.aspect=el.clientWidth/Math.max(1,el.clientHeight);camera.updateProjectionMatrix();};const observer=new ResizeObserver(resize);observer.observe(el);resize();
- let frame=0;const loop=()=>{controls.update();renderer.render(scene,camera);frame=requestAnimationFrame(loop);};loop();
- const ray=new THREE.Raycaster();let down=false,last=0;const dab=(e:PointerEvent)=>{const current=latest.current;if(current.mode==='orbit'||!current.onStroke||Date.now()-last<35)return;last=Date.now();const rect=renderer.domElement.getBoundingClientRect();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);const hit=ray.intersectObject(mesh)[0];if(hit){const p=mesh.worldToLocal(hit.point);current.onStroke({x:p.x,y:p.y,z:p.z,radius:current.brush,strength:current.mode==='push'?-.035:.035});}};
- const start=(e:PointerEvent)=>{down=true;if(latest.current.mode!=='orbit'){renderer.domElement.setPointerCapture(e.pointerId);dab(e);}};const move=(e:PointerEvent)=>{if(down)dab(e);};const end=()=>{down=false;};renderer.domElement.addEventListener('pointerdown',start);renderer.domElement.addEventListener('pointermove',move);renderer.domElement.addEventListener('pointerup',end);renderer.domElement.addEventListener('pointercancel',end);
+ let frame=0;const loop=()=>{if(latest.current.mode==='orbit')controls.update();renderer.render(scene,camera);frame=requestAnimationFrame(loop);};loop();
+ const ray=new THREE.Raycaster();let last=0;const dab=(e:PointerEvent)=>{const current=latest.current;if(current.mode==='orbit'||!current.onStroke||Date.now()-last<35)return;last=Date.now();const rect=renderer.domElement.getBoundingClientRect();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);const hit=ray.intersectObject(mesh)[0];if(hit){const p=mesh.worldToLocal(hit.point);current.onStroke({x:p.x,y:p.y,z:p.z,radius:current.brush,strength:current.mode==='push'?-.035:.035});}};
+ const gestures=sculptGestureHandlers(renderer.domElement,()=>latest.current.mode,dab);
+ const start=(event:PointerEvent)=>{last=0;gestures.start(event);};
+ const options={capture:true,passive:false};
+ el.addEventListener('pointerdown',start,options);
+ el.addEventListener('pointermove',gestures.move,options);
+ el.addEventListener('pointerup',gestures.end,options);
+ el.addEventListener('pointercancel',gestures.end,options);
+ renderer.domElement.addEventListener('lostpointercapture',gestures.end);
+
  const keydown=(e:KeyboardEvent)=>{const offset=camera.position.clone().sub(controls.target);if(e.key==='ArrowLeft'||e.key==='ArrowRight')offset.applyAxisAngle(new THREE.Vector3(0,1,0),e.key==='ArrowLeft'?.15:-.15);else if(e.key==='ArrowUp'||e.key==='ArrowDown')offset.applyAxisAngle(new THREE.Vector3(1,0,0),e.key==='ArrowUp'?.1:-.1);else if(e.key==='+'||e.key==='=')offset.multiplyScalar(.9);else if(e.key==='-')offset.multiplyScalar(1.1);else return;e.preventDefault();camera.position.copy(controls.target).add(offset);controls.update();};el.addEventListener('keydown',keydown);
- return()=>{cancelAnimationFrame(frame);observer.disconnect();controls.dispose();mesh.geometry.dispose();material.map?.dispose();material.bumpMap?.dispose();material.dispose();renderer.dispose();el.replaceChildren();el.removeEventListener('keydown',keydown);runtime.current=null;};
+ return()=>{cancelAnimationFrame(frame);observer.disconnect();
+ el.removeEventListener('pointerdown',start,true);
+ el.removeEventListener('pointermove',gestures.move,true);
+ el.removeEventListener('pointerup',gestures.end,true);
+ el.removeEventListener('pointercancel',gestures.end,true);
+ renderer.domElement.removeEventListener('lostpointercapture',gestures.end);
+ gestures.release();controls.dispose();mesh.geometry.dispose();material.map?.dispose();material.bumpMap?.dispose();material.dispose();renderer.dispose();el.replaceChildren();el.removeEventListener('keydown',keydown);runtime.current=null;};
  },[]);
  useEffect(()=>{const r=runtime.current;if(!r)return;r.mesh.geometry.dispose();r.mesh.geometry=makeGeometry(config);},[config.template,config.roughness,config.stretch,config.flatten,config.strokes]);
  useEffect(()=>{const r=runtime.current;if(!r)return;let cancelled=false;const base=stoneCanvas(config);const bump=new THREE.CanvasTexture(base);const ctx=base.getContext('2d')!;const apply=()=>{if(cancelled)return;const tex=new THREE.CanvasTexture(base);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=r.renderer.capabilities.getMaxAnisotropy();r.material.map?.dispose();r.material.bumpMap?.dispose();r.material.map=tex;r.material.bumpMap=bump;r.material.bumpScale=config.stone==='marble'?.018:.065;r.material.roughness=config.stone==='marble'?.35:.92;r.material.needsUpdate=true;};
@@ -44,5 +59,5 @@ export default function RockScene({config,mode='orbit',brush=.32,onStroke,onThum
  },[config.stone,config.color,config.image,config.wrap]);
  useEffect(()=>{if(runtime.current)runtime.current.controls.enabled=mode==='orbit';},[mode]);
  useEffect(()=>{const r=runtime.current;if(r){r.camera.position.set(0,.5,5.6);r.controls.target.set(0,0,0);r.controls.update();}},[reset]);
- return <div ref={host} className={'rock-canvas '+(mode!=='orbit'?'sculpting':'')} tabIndex={0} role="application" aria-label="3D rock. Drag to rotate, pinch or scroll to zoom. Keyboard: arrow keys rotate, plus and minus zoom.">{error&&<p className="scene-error" role="alert">{error}</p>}</div>;
+ return <div ref={host} className={'rock-canvas '+(mode!=='orbit'?'sculpting':'')} tabIndex={0} role="application" aria-label={mode==='orbit'?'3D rock. Drag to rotate, pinch or scroll to zoom. Keyboard: arrow keys rotate, plus and minus zoom.':`3D rock. Drag with one finger to ${mode==='push'?'push in':'pull out'} the surface. Select Orbit to rotate or zoom.`}>{error&&<p className="scene-error" role="alert">{error}</p>}</div>;
 }
